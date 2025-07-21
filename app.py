@@ -17,14 +17,30 @@ load_dotenv()
 
 # === Odoo Configuration from Environment ===
 CONFIG = {
-    'url': st.secrets["ODOO_URL"],
-    'db': st.secrets["ODOO_DB"],
-    'username': st.secrets["ODOO_USERNAME"],
-    'password': st.secrets["ODOO_PASSWORD"],
-    'timeout': int(st.secrets["ODOO_TIMEOUT"]),
-    'order_batch_size': int(st.secrets["ORDER_BATCH_SIZE"]),
-    'read_batch_size': int(st.secrets["READ_BATCH_SIZE"])
+    'url': os.getenv("ODOO_URL"),
+    'db': os.getenv("ODOO_DB"),
+    'username': os.getenv("ODOO_USERNAME"),
+    'password': os.getenv("ODOO_PASSWORD"),
+    'timeout': int(os.getenv("ODOO_TIMEOUT")),
+    'order_batch_size': int(os.getenv("ORDER_BATCH_SIZE")),
+    'read_batch_size': int(os.getenv("READ_BATCH_SIZE")),
+    'user_email': os.getenv('USER_EMAIL'),
+    'user_code': os.getenv('USER_CODE')
 }
+
+# === Initialize Session State ===
+if 'user_authenticated' not in st.session_state:
+    st.session_state.user_authenticated = False
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = ""
+if 'user_code' not in st.session_state:
+    st.session_state.user_code = ""
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'models' not in st.session_state:
+    st.session_state.models = None
+if 'uid' not in st.session_state:
+    st.session_state.uid = None
 
 # === Helper Functions ===
 def format_mobile_number(mobile):
@@ -43,6 +59,10 @@ def format_mobile_number(mobile):
         return f"+{cleaned}"
     else:
         return mobile
+
+def authenticate_user(email, code):
+    """Authenticate user with email and code"""
+    return email == CONFIG['user_email'] and code == CONFIG['user_code']
 
 # === Custom Transport with Timeout ===
 class TimeoutTransport(xmlrpc.client.Transport):
@@ -63,6 +83,19 @@ def connect_to_odoo():
     uid = common.authenticate(CONFIG['db'], CONFIG['username'], CONFIG['password'], {})
     models = xmlrpc.client.ServerProxy(CONFIG['url'] + 'xmlrpc/2/object', transport=transport, allow_none=True)
     return uid, models
+
+def authenticate():
+    try:
+        uid, models = connect_to_odoo()
+        if uid:
+            st.session_state.authenticated = True
+            st.session_state.models = models
+            st.session_state.uid = uid
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Authentication failed: {str(e)}")
+        return False
 
 BRANCH_KEYWORDS = {
     "CBE": ["CB", "CBE"],
@@ -696,6 +729,87 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
+    # Authentication in sidebar
+    with st.sidebar:
+        st.markdown("### 🔐 User Authentication")
+        if not st.session_state.user_authenticated:
+            with st.form("login_form"):
+                st.markdown("**Enter your credentials:**")
+                email = st.text_input("Email", placeholder="user@example.com")
+                code = st.text_input("Access Code", type="password", placeholder="Enter access code")
+                
+                if st.form_submit_button("🔓 Login", use_container_width=True):
+                    if authenticate_user(email, code):
+                        st.session_state.user_authenticated = True
+                        st.session_state.user_email = email
+                        st.session_state.user_code = code
+                        st.success("✅ User authenticated!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Invalid credentials!")
+        else:
+            st.success(f"✅ Welcome, {st.session_state.user_email}")
+            if st.button("🔓 Logout", use_container_width=True):
+                st.session_state.user_authenticated = False
+                st.session_state.authenticated = False
+                st.session_state.models = None
+                st.session_state.uid = None
+                st.rerun()
+        
+        if st.session_state.user_authenticated:
+            st.markdown("---")
+            st.markdown("### 🔐 Odoo Connection")
+            if not st.session_state.authenticated:
+                if st.button("🔌 Connect to Odoo", use_container_width=True):
+                    with st.spinner("Connecting to Odoo..."):
+                        if authenticate():
+                            st.success("✅ Connected successfully!")
+                            st.rerun()
+                        else:
+                            st.error("❌ Connection failed!")
+            else:
+                st.success("✅ Connected to Odoo")
+                if st.button("🔌 Disconnect", use_container_width=True):
+                    st.session_state.authenticated = False
+                    st.session_state.models = None
+                    st.session_state.uid = None
+                    st.rerun()
+            
+            st.markdown("---")
+            st.markdown("### 📅 Quick Date Presets")
+            preset = st.selectbox(
+                "Choose preset:",
+                ["Custom", "Today", "Yesterday", "Last 7 days", "Last 30 days", "This Month", "Last Month"],
+                key="date_preset"
+            )
+            
+            today = datetime.now().date()
+            if preset == "Today":
+                from_date = to_date = today
+            elif preset == "Yesterday":
+                from_date = to_date = today - timedelta(days=1)
+            elif preset == "Last 7 days":
+                from_date = today - timedelta(days=7)
+                to_date = today
+            elif preset == "Last 30 days":
+                from_date = today - timedelta(days=30)
+                to_date = today
+            elif preset == "This Month":
+                from_date = today.replace(day=1)
+                to_date = today
+            elif preset == "Last Month":
+                last_month = today.replace(day=1) - timedelta(days=1)
+                from_date = last_month.replace(day=1)
+                to_date = last_month
+            else:
+                from_date = st.date_input("From Date", datetime(2024, 1, 1), key="from_date")
+                to_date = st.date_input("To Date", today, key="to_date")
+
+    # Main content
+    if not st.session_state.user_authenticated:
+        st.info("👆 Please authenticate using the sidebar to get started.")
+        return
+
     st.markdown("""
     <div class="header fade-in">
         <h1>🏪 Prashanti Sarees</h1>
@@ -703,39 +817,10 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    with st.sidebar:
-        st.markdown("### ⚙️ Configuration")
-        st.info("Configure your Odoo connection in the `.env` file")
-        
-        st.markdown("### 📅 Quick Date Presets")
-        preset = st.selectbox(
-            "Choose preset:",
-            ["Custom", "Today", "Yesterday", "Last 7 days", "Last 30 days", "This Month", "Last Month"],
-            key="date_preset"
-        )
-        
-        today = datetime.now().date()
-        if preset == "Today":
-            from_date = to_date = today
-        elif preset == "Yesterday":
-            from_date = to_date = today - timedelta(days=1)
-        elif preset == "Last 7 days":
-            from_date = today - timedelta(days=7)
-            to_date = today
-        elif preset == "Last 30 days":
-            from_date = today - timedelta(days=30)
-            to_date = today
-        elif preset == "This Month":
-            from_date = today.replace(day=1)
-            to_date = today
-        elif preset == "Last Month":
-            last_month = today.replace(day=1) - timedelta(days=1)
-            from_date = last_month.replace(day=1)
-            to_date = last_month
-        else:
-            from_date = st.date_input("From Date", datetime(2024, 1, 1), key="from_date")
-            to_date = st.date_input("To Date", today, key="to_date")
-    
+    if not st.session_state.authenticated:
+        st.info("👆 Please connect to Odoo using the sidebar to get started.")
+        return
+
     st.markdown('<div class="section-header">🏢 Branch Selection</div>', unsafe_allow_html=True)
     
     branch_options = ["TN", "CBE", "MLM", "HYD", "JYR", "Vizag", "Saree Trails"]
